@@ -4179,8 +4179,8 @@ static BOOL import_badblocks(void)
 				case EOF:
 					break;
 				default:
-					if (block >> 32) {
-						ntfs_log_error("Bad block list");
+					if (block >> 32 || block >= (unsigned long long)g_vol->nr_clusters) {
+						ntfs_log_error("Bad block list.");
 						return FALSE;
 					}
 					if (!append_to_bad_blocks(block))
