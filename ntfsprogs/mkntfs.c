@@ -156,6 +156,12 @@ switch if you want to be able to build the NTFS utilities."
 /* Page size on ia32. Can change to 8192 on Alpha. */
 #define NTFS_PAGE_SIZE	4096
 
+/*
+ * Windows Vista always uses 4096 bytes as the default cluster
+ * size regardless of the volume size so we do it, too.
+ */
+#define DF_CLUSTER_SIZE	4096
+
 static char EXEC_NAME[] = "mkntfs";
 
 struct BITMAP_ALLOCATION {
@@ -223,6 +229,7 @@ static struct mkntfs_options {
 	long mft_zone_multiplier;	/* -z, value from 1 to 4. Default is 1. */
 	long long num_sectors;		/* size of device in sectors */
 	long cluster_size;		/* -c, format with this cluster-size */
+	FILE *badblocks;		/* -b, bad blocks table input file */
 	BOOL with_uuid;			/* -U, request setting an uuid */
 	char *label;			/* -L, volume label */
 } opts;
@@ -252,6 +259,10 @@ static void mkntfs_usage(void)
 "    -n, --no-action                 Do not write to disk\n"
 "\n"
 "Advanced options:\n"
+"    -b, --badblocks FILENAME        Specify a badblocks output file or \"-\" for stdin.\n"
+"                                    WARNING: mkntfs --cluster-size must be equal to\n"
+"                                             badblocks -b block_size.\n"
+"                                             Use \"badblocks -b " #DF_CLUSTER_SIZE "\" for default.\n"
 "    -c, --cluster-size BYTES        Specify the cluster size for the volume\n"
 "    -s, --sector-size BYTES         Specify the sector size for the device\n"
 "    -p, --partition-start SECTOR    Specify the partition start sector\n"
@@ -288,6 +299,7 @@ static void mkntfs_version(void)
 	ntfs_log_info("Copyright (c) 2005      Erik Sornes\n");
 	ntfs_log_info("Copyright (c) 2007      Yura Pakhuchiy\n");
 	ntfs_log_info("Copyright (c) 2010-2014 Jean-Pierre Andre\n");
+	ntfs_log_info("Copyright (c) 2020      Albert Gomà\n");
 	ntfs_log_info("\n%s\n%s%s\n", ntfs_gpl, ntfs_bugs, ntfs_home);
 }
 
@@ -592,8 +604,9 @@ static void mkntfs_init_options(struct mkntfs_options *opts2)
  */
 static int mkntfs_parse_options(int argc, char *argv[], struct mkntfs_options *opts2)
 {
-	static const char *sopt = "-c:CfFhH:IlL:np:qQs:S:TUvVz:";
+	static const char *sopt = "-b:c:CfFhH:IlL:np:qQs:S:TUvVz:";
 	static const struct option lopt[] = {
+		{ "badblocks",	required_argument,	NULL, 'b' },
 		{ "cluster-size",	required_argument,	NULL, 'c' },
 		{ "debug",		no_argument,		NULL, 'Z' },
 		{ "enable-compression",	no_argument,		NULL, 'C' },
@@ -641,6 +654,17 @@ static int mkntfs_parse_options(int argc, char *argv[], struct mkntfs_options *o
 					"number of sectors",
 					&opts2->num_sectors))
 				err++;
+			break;
+		case 'b':
+			if (strcmp(optarg, "-") == 0)
+				opts2->badblocks = stdin;
+			else {
+				opts2->badblocks = fopen(optarg, "r");
+				if (opts2->badblocks == NULL) {
+					ntfs_log_error("Cannot open badblocks file.");
+					err++;
+				}
+			}
 			break;
 		case 'C':
 			opts2->enable_compression = TRUE;
@@ -3708,11 +3732,8 @@ static BOOL mkntfs_override_vol_params(ntfs_volume *vol)
 			(long long)(volume_size / 1024));
 	/* If user didn't specify the cluster size, determine it now. */
 	if (!vol->cluster_size) {
-		/*
-		 * Windows Vista always uses 4096 bytes as the default cluster
-		 * size regardless of the volume size so we do it, too.
-		 */
-		vol->cluster_size = 4096;
+
+		vol->cluster_size = DF_CLUSTER_SIZE;
 		/* For small volumes on devices with large sector sizes. */
 		if (vol->cluster_size < (u32)opts.sector_size)
 			vol->cluster_size = opts.sector_size;
@@ -4140,6 +4161,37 @@ static BOOL mkntfs_initialize_rl_bad(void)
 	g_rl_bad[1].length = 0LL;
 
 	/* TODO: Mark bad blocks as such. */
+	return TRUE;
+}
+
+/**
+ * import_badblocks -
+ */
+static BOOL import_badblocks(void)
+{
+	if(opts.badblocks) {
+		unsigned long long block;
+		for(;;) {
+			switch (fscanf(opts.badblocks, "%llu\n", &block)) {
+				case 0:
+					ntfs_log_error("Wrong badblocks file format.");
+					return FALSE;
+				case EOF:
+					break;
+				default:
+					if (block >> 32) {
+						ntfs_log_error("Bad block list");
+						return FALSE;
+					}
+					if (!append_to_bad_blocks(block))
+						return FALSE;
+					continue;
+			}
+			break;
+		}
+		if (opts.badblocks != stdin)
+			fclose(opts.badblocks);
+	}
 	return TRUE;
 }
 
@@ -5040,6 +5092,10 @@ static int mkntfs_redirect(struct mkntfs_options *opts2)
 	/* Create runlist for $BadClus, $DATA named stream $Bad. */
 	if (!mkntfs_initialize_rl_bad())
 		goto done;
+	/* Add block list from badblocks output file to $BadClus. */
+	if (!import_badblocks()) {
+		goto done;
+	}
 	/* If not quick format, fill the device with 0s. */
 	if (!opts.quick_format) {
 		if (!mkntfs_fill_device_with_zeroes())
