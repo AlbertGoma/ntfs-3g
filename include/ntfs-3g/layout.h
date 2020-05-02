@@ -633,6 +633,7 @@ typedef enum {
 	ATTR_COMPRESSION_MASK	= const_cpu_to_le16(0x00ff),  /* Compression
 						method mask. Also, first
 						illegal value. */
+	ATTR_IS_BAD			= const_cpu_to_le16(0x2000),
 	ATTR_IS_ENCRYPTED	= const_cpu_to_le16(0x4000),
 	ATTR_IS_SPARSE		= const_cpu_to_le16(0x8000),
 } __attribute__((__packed__)) ATTR_FLAGS;

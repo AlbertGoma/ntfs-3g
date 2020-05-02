@@ -160,7 +160,7 @@ switch if you want to be able to build the NTFS utilities."
  * Windows Vista always uses 4096 bytes as the default cluster
  * size regardless of the volume size so we do it, too.
  */
-#define DF_CLUSTER_SIZE	4096
+//#define DF_CLUSTER_SIZE	4096
 
 static char EXEC_NAME[] = "mkntfs";
 
@@ -262,7 +262,8 @@ static void mkntfs_usage(void)
 "    -b, --badblocks FILENAME        Specify a badblocks output file or \"-\" for stdin.\n"
 "                                    WARNING: mkntfs --cluster-size must be equal to\n"
 "                                             badblocks -b block_size.\n"
-"                                             Use \"badblocks -b " #DF_CLUSTER_SIZE "\" for default.\n"
+//"                                             Use \"badblocks -b " DF_CLUSTER_SIZE "\" for default.\n"
+"                                             Use \"badblocks -b 4096\" for default.\n"
 "    -c, --cluster-size BYTES        Specify the cluster size for the volume\n"
 "    -s, --sector-size BYTES         Specify the sector size for the device\n"
 "    -p, --partition-start SECTOR    Specify the partition start sector\n"
@@ -1601,24 +1602,26 @@ static int insert_positioned_attr_in_mft_record(MFT_RECORD *m,
 		err = -EOPNOTSUPP;
 	} else {
 		a->compression_unit = 0;
-		if ((type == AT_DATA)
-		    && (m->mft_record_number
-				 == const_cpu_to_le32(FILE_LogFile)))
-			bw = ntfs_rlwrite(g_vol->dev, rl, val, val_len,
-					&inited_size, WRITE_LOGFILE);
-		else
-			bw = ntfs_rlwrite(g_vol->dev, rl, val, val_len,
-					&inited_size, WRITE_STANDARD);
-		if (bw != val_len) {
-			ntfs_log_error("Error writing non-resident attribute "
-					"value.\n");
-			return -errno;
+		if (0 == (flags & ATTR_IS_BAD) ) {
+			if ((type == AT_DATA)
+				&& (m->mft_record_number
+					 == const_cpu_to_le32(FILE_LogFile)))
+				bw = ntfs_rlwrite(g_vol->dev, rl, val, val_len,
+						&inited_size, WRITE_LOGFILE);
+			else
+				bw = ntfs_rlwrite(g_vol->dev, rl, val, val_len,
+						&inited_size, WRITE_STANDARD);
+			if (bw != val_len) {
+				ntfs_log_error("Error writing non-resident attribute "
+						"value.\n");
+				return -errno;
+			}
 		}
 		err = ntfs_mapping_pairs_build(g_vol, (u8*)a + hdr_size +
 				((name_len + 7) & ~7), mpa_size, rl, 0, NULL);
 	}
 	a->initialized_size = cpu_to_sle64(inited_size);
-	if (err < 0 || bw != val_len) {
+	if (err < 0 || (bw != val_len && (flags & ATTR_IS_BAD) == 0)) {
 		/* FIXME: Handle error. */
 		/* deallocate clusters */
 		/* remove attribute */
@@ -3733,7 +3736,8 @@ static BOOL mkntfs_override_vol_params(ntfs_volume *vol)
 	/* If user didn't specify the cluster size, determine it now. */
 	if (!vol->cluster_size) {
 
-		vol->cluster_size = DF_CLUSTER_SIZE;
+		//vol->cluster_size = DF_CLUSTER_SIZE;
+		vol->cluster_size = 4096;
 		/* For small volumes on devices with large sector sizes. */
 		if (vol->cluster_size < (u32)opts.sector_size)
 			vol->cluster_size = opts.sector_size;
@@ -4140,32 +4144,66 @@ static BOOL mkntfs_initialize_rl_boot(void)
 }
 
 /**
+ * compare_badblocks - Albert
+ */
+static int compare_badblocks(const void * a, const void * b)
+{
+	return	*(unsigned long long*)a > *(unsigned long long*)b ? 1 :
+			*(unsigned long long*)a < *(unsigned long long*)b ? -1 : 0;
+}
+
+/**
  * mkntfs_initialize_rl_bad -
  */
 static BOOL mkntfs_initialize_rl_bad(void)
 {
 	/* Create runlist for $BadClus, $DATA named stream $Bad. */
-	g_rl_bad = ntfs_malloc(2 * sizeof(runlist));
+	g_rl_bad = ntfs_malloc((2 + g_num_bad_blocks * 2) * sizeof(runlist));
 	if (!g_rl_bad)
 		return FALSE;
-
-	g_rl_bad[0].vcn = 0LL;
-	g_rl_bad[0].lcn = -1LL;
+	
+	qsort(g_bad_blocks, g_num_bad_blocks, sizeof(unsigned long long), compare_badblocks);
+	
 	/*
 	 * $BadClus named stream $Bad contains the whole volume as a single
 	 * sparse runlist entry.
 	 */
-	g_rl_bad[1].vcn = g_vol->nr_clusters;
-	g_rl_bad[0].length = g_vol->nr_clusters;
-	g_rl_bad[1].lcn = -1LL;
-	g_rl_bad[1].length = 0LL;
+	unsigned long long i = 0LL, j = 0LL, pos = 0LL;
+	for (; i < g_num_bad_blocks; i++) {
+		if (i != 0LL) {
+			if (g_bad_blocks[i-1] == g_bad_blocks[i]) { //Duplicates
+				continue;
+			}
+			else if (g_bad_blocks[i-1] == g_bad_blocks[i]-1) { //Contiguous
+				g_rl_bad[j-1].length++;
+				pos++;
+				continue;
+			}
+		}
+	
+		g_rl_bad[j].vcn			= pos;
+		g_rl_bad[j].lcn			= -1LL;
+		g_rl_bad[j++].length	= g_bad_blocks[i] - pos;
+		pos						= g_bad_blocks[i];
+		
+		g_rl_bad[j].vcn			= pos;
+		g_rl_bad[j].lcn			= pos++;
+		g_rl_bad[j++].length	= 1LL;
+	}
+	
+	g_rl_bad[j].vcn			= pos;
+	g_rl_bad[j].lcn			= -1LL;
+	g_rl_bad[j++].length	= g_vol->nr_clusters - pos;
+	
+	g_rl_bad[j].vcn			= g_vol->nr_clusters - pos;
+	g_rl_bad[j].lcn			= -1LL;
+	g_rl_bad[j].length		= 0LL;
 
-	/* TODO: Mark bad blocks as such. */
 	return TRUE;
 }
 
 /**
- * import_badblocks -
+ * import_badblocks - Albert
  */
 static BOOL import_badblocks(void)
 {
@@ -4802,14 +4840,15 @@ static BOOL mkntfs_create_root_structures(void)
 		return FALSE;
 	ntfs_log_verbose("Creating $BadClus (mft record 8)\n");
 	m = (MFT_RECORD*)(g_buf + 8 * g_vol->mft_record_size);
+	
+	err = add_attr_data(m, NULL, 0, CASE_SENSITIVE,
+				const_cpu_to_le16(0), NULL, 0);
 	/* FIXME: This should be IGNORE_CASE */
 	/* Create a sparse named stream of size equal to the volume size. */
-	err = add_attr_data_positioned(m, "$Bad", 4, CASE_SENSITIVE,
-			const_cpu_to_le16(0), g_rl_bad, NULL,
-			g_vol->nr_clusters * g_vol->cluster_size);
 	if (!err) {
-		err = add_attr_data(m, NULL, 0, CASE_SENSITIVE,
-				const_cpu_to_le16(0), NULL, 0);
+		err = add_attr_data_positioned(m, "$Bad", 4, CASE_SENSITIVE,
+				ATTR_IS_BAD, g_rl_bad, NULL,
+				g_vol->nr_clusters * g_vol->cluster_size);
 	}
 	if (!err) {
 		err = create_hardlink(g_index_block, root_ref, m,
@@ -5089,10 +5128,7 @@ static int mkntfs_redirect(struct mkntfs_options *opts2)
 	g_buf = ntfs_calloc(g_mft_size);
 	if (!g_buf)
 		goto done;
-	/* Create runlist for $BadClus, $DATA named stream $Bad. */
-	if (!mkntfs_initialize_rl_bad())
-		goto done;
-	/* Add block list from badblocks output file to $BadClus. */
+	/* Load block list from badblocks output file. Albert*/
 	if (!import_badblocks()) {
 		goto done;
 	}
@@ -5101,6 +5137,9 @@ static int mkntfs_redirect(struct mkntfs_options *opts2)
 		if (!mkntfs_fill_device_with_zeroes())
 			goto done;
 	}
+	/* Create runlist for $BadClus, $DATA named stream $Bad. */
+	if (!mkntfs_initialize_rl_bad())
+		goto done;
 	/* Create NTFS volume structures. */
 	if (!mkntfs_create_root_structures())
 		goto done;
