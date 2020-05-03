@@ -7,6 +7,7 @@
  * Copyright (c) 2005      Erik Sornes
  * Copyright (c) 2007      Yura Pakhuchiy
  * Copyright (c) 2010-2014 Jean-Pierre Andre
+ * Copyright (c) 2020      Albert Gomà
  *
  * This utility will create an NTFS 1.2 or 3.1 volume on a user
  * specified (block) device.
@@ -4198,6 +4199,10 @@ static BOOL mkntfs_initialize_rl_bad(void)
 	g_rl_bad[j].vcn			= g_vol->nr_clusters - pos;
 	g_rl_bad[j].lcn			= -1LL;
 	g_rl_bad[j].length		= 0LL;
+	
+	
+	for (i = 1LL; g_rl_bad[i].length; i+=2)
+		bitmap_allocate(g_rl_bad[i].lcn, g_rl_bad[i].length);
 
 	return TRUE;
 }
