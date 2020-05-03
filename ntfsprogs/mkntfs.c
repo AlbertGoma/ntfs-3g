@@ -157,12 +157,6 @@ switch if you want to be able to build the NTFS utilities."
 /* Page size on ia32. Can change to 8192 on Alpha. */
 #define NTFS_PAGE_SIZE	4096
 
-/*
- * Windows Vista always uses 4096 bytes as the default cluster
- * size regardless of the volume size so we do it, too.
- */
-//#define DF_CLUSTER_SIZE	4096
-
 static char EXEC_NAME[] = "mkntfs";
 
 struct BITMAP_ALLOCATION {
@@ -263,7 +257,6 @@ static void mkntfs_usage(void)
 "    -b, --badblocks FILENAME        Specify a badblocks output file or \"-\" for stdin.\n"
 "                                    WARNING: mkntfs --cluster-size must be equal to\n"
 "                                             badblocks -b block_size.\n"
-//"                                             Use \"badblocks -b " DF_CLUSTER_SIZE "\" for default.\n"
 "                                             Use \"badblocks -b 4096\" for default.\n"
 "    -c, --cluster-size BYTES        Specify the cluster size for the volume\n"
 "    -s, --sector-size BYTES         Specify the sector size for the device\n"
